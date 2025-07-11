@@ -1,0 +1,154 @@
+---
+title: "homework-1"
+author: "Lucas Maciel Balieiro - 800534"
+date: "2025-07-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### **1. Carregamento dos Pacotes e Definição dos Ativos**
+
+Primeiro, vamos carregar os pacotes necessários para a análise.
+
+Neste chunk de código, também definimos os 4 ativos que serão analisados, conforme solicitado na primeira questão. Os ativos escolhidos foram:
+* **PETR4.SA**: Petrobras (Petróleo)
+* **VALE3.SA**: Vale (Mineração)
+* **ITUB4.SA**: Itaú Unibanco (Setor Financeiro)
+* **MGLU3.SA**: Magazine Luiza (Varejo)
+
+```{r carregar-pacotes-e-ativos, message=FALSE, warning=FALSE}
+
+library(BatchGetSymbols)
+library(tidyverse)
+library(ggthemes)
+library(cowplot)
+library(moments)
+library(corrplot)
+
+rm(list=ls())
+
+tickers <- c('PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'MGLU3.SA')
+
+
+first_date <- '2020-01-01'
+last_date <- Sys.Date()
+assets_list <- BatchGetSymbols(tickers = tickers,
+                               first.date = first_date,
+                               last.date = last_date,
+                               type.return = "log", 
+                               freq.data = "daily")
+
+assets <- assets_list[[2]]
+knitr::kable(head(assets))
+```
+
+### **2. Análise dos Fatos Estilizados (Questão 1)**
+
+Agora, vamos verificar os fatos estilizados para cada uma das 4 variáveis escolhidas.
+
+```{r fatos-estilizados, fig.width=10, fig.height=8}
+
+
+for (ticker_atual in tickers) {
+  
+  dados_ativo <- assets %>% filter(ticker == ticker_atual)
+  
+  # --- Gráficos ---
+  
+  # Gráfico dos retornos diários
+  plot_returns <- ggplot(dados_ativo) + geom_line(aes(x = ref.date, y = ret.closing.prices), color = 'darkblue') + labs(x = "", y = 'Retornos', title = paste("Retornos Diarios de", ticker_atual)) + theme_economist()
+  
+  # Gráfico da volatilidade (retornos absolutos)
+  plot_volatility <- ggplot(dados_ativo) + geom_line(aes(x = ref.date, y = abs(ret.closing.prices)), color = 'darkred') + labs(x = "", y = 'Retornos Absolutos', title = paste("Volatilidade de", ticker_atual)) + theme_economist()
+  
+  # Histograma
+  plot_histogram <- ggplot(dados_ativo) + geom_histogram(aes(x = ret.closing.prices, y = ..density..), color = "white", fill = "grey50", linetype = "solid", alpha = 0.8) + geom_density(aes(x = ret.closing.prices, y = ..density..), color = "black") + labs(x = "", y = 'Densidade', title = "Histograma dos Retornos") + theme_economist()
+  
+  # QQ-Plot
+  plot_qq <- ggplot(dados_ativo, aes(sample = ret.closing.prices)) + stat_qq() + stat_qq_line() + labs(x = "Quantis Teoricos", y = 'Quantis da Amostra', title = "Q-Q Plot") + theme_economist()
+  
+
+  # Combinando os gráficos em um único painel
+  grid_plots <- cowplot::plot_grid(plot_returns, plot_volatility, plot_histogram, plot_qq, nrow = 2)
+  print(grid_plots)
+}
+```
+
+### **3. Estatísticas Descritivas (Questão Extra 2)**
+
+Calculando as principais estatísticas descritivas para os retornos de cada um dos ativos selecionados
+
+```{r estatisticas-descritivas}
+desc_stats <- assets %>%
+  group_by(ticker) %>%
+  summarise(
+    Média = mean(ret.closing.prices, na.rm = TRUE),
+    Mediana = median(ret.closing.prices, na.rm = TRUE),
+    `Desvio Padrão` = sd(ret.closing.prices, na.rm = TRUE),
+    Variância = var(ret.closing.prices, na.rm = TRUE),
+    Assimetria = skewness(ret.closing.prices, na.rm = TRUE),
+    Curtose = kurtosis(ret.closing.prices, na.rm = TRUE)
+  ) %>% 
+  ungroup()
+
+knitr::kable(desc_stats, caption = "Estatisticas Descritivas dos Retornos Logaritmicos")
+```
+### **4. Coeficiente de Correlação e Gráfico de Dispersão (Questão Extra 3)**
+  
+Calculando o coeficiente de correlação entre os retornos de dois ativos (PETR4.SA e VALE3.SA) e gerando o seu respectivo gráfico de dispersão
+
+```{r correlacao-dispersao}
+# Pivotando os dados para o formato largo
+assets_wide <- assets %>%
+  select(ref.date, ticker, ret.closing.prices) %>%
+  pivot_wider(names_from = ticker, values_from = ret.closing.prices)
+
+# Calculando a correlação entre PETR4 e VALE3
+correlation <- cor(assets_wide$`PETR4.SA`, assets_wide$`VALE3.SA`, use = "complete.obs")
+
+# Imprimindo o resultado
+print(paste("O coeficiente de correlacao entre PETR4.SA e VALE3.SA é:", round(correlation, 4)))
+scatter_plot <- ggplot(assets_wide, aes(x = `PETR4.SA`, y = `VALE3.SA`)) +
+  geom_point(alpha = 0.5, color = "#006600") +
+  geom_smooth(method = "lm", col = "red") +
+  labs(
+    title = "Grafico de Dispersao: Retornos de PETR4 vs. VALE3",
+    subtitle = paste("Correlacao de Pearson =", round(correlation, 4)),
+    x = "Retornos Diários PETR4.SA",
+    y = "Retornos Diários VALE3.SA"
+  ) +
+  theme_economist()
+
+print(scatter_plot)
+```
+
+### **5. Mapa de Calor das Correlações (Questão Extra 4)**
+
+Calculamos a matriz de correlação para todos os quatro ativos escolhidos e a visualizamos como um mapa de calor
+
+```{r mapa-calor, fig.width=8, fig.height=8}
+# Selecionando apenas as colunas de retorno do data frame largo
+returns_data <- assets_wide %>% select(all_of(tickers))
+
+# Calculando a matriz de correlação
+cor_matrix <- cor(returns_data, use = "complete.obs")
+print("Matriz de Correlacao:")
+knitr::kable(cor_matrix)
+
+# Criando o mapa de calor
+corrplot(cor_matrix,
+         method = "color",       
+         type = "upper",         
+         order = "hclust",       
+         addCoef.col = "black",  
+         tl.col = "black",       
+         tl.srt = 45,            
+         diag = FALSE,           
+         title = "Mapa de Calor das Correlacoes entre os Ativos",
+         mar = c(0,0,1,0))       
+```
