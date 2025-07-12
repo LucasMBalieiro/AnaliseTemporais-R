@@ -1,5 +1,5 @@
 ---
-title: "Análise de Volatilidade com Modelos GARCH"
+title: "homework-4"
 author: "Lucas Maciel Balieiro"
 date: "2025-07-12"
 output:

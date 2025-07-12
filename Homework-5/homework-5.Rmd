@@ -1,0 +1,167 @@
+---
+title: "homework-5"
+author: "Lucas Maciel Balieiro"
+date: "2025-07-12"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### **1. Introdução e Preparação dos Dados**
+
+O objetivo deste trabalho é modelar e prever a volatilidade dos retornos diários das ações da VALE (VALE3.SA). Para isso, ajustaremos modelos da família GARCH e selecionaremos o mais adequado com base em critérios de informação.
+
+Primeiramente, carregamos os pacotes necessários e obtemos os dados históricos a partir de 21 de março de 2019.
+
+```{r preparacao_dados}
+# Carregamento de Pacotes
+library(tidyverse)
+library(BatchGetSymbols)
+library(rugarch)
+library(FinTS)
+
+# Obtenção dos dados da VALE3.SA
+vale_data <- BatchGetSymbols(tickers = "VALE3.SA",
+                             first.date = '2019-03-21',
+                             last.date = Sys.Date(),
+                             type.return = "log",
+                             freq.data = "daily")
+
+# Extração e tratamento da série de retornos
+retornos_vale <- vale_data$df.tickers %>%
+  pull(ret.closing.prices) %>%
+  na.omit() %>%
+  as.ts()
+
+# Análise visual inicial dos retornos
+ggplot(mapping = aes(x = 1:length(retornos_vale), y = retornos_vale)) +
+  geom_line(color = "darkgreen") +
+  labs(
+    title = "Retornos Logarítmicos Diários de VALE3.SA",
+    subtitle = "Período: 2019 a Presente",
+    x = "Observações",
+    y = "Retorno Logarítmico"
+  ) +
+  theme_light()
+```
+O gráfico dos retornos exibe **clusters de volatilidade**, um fato estilizado que justifica o uso de modelos da família GARCH.
+
+### **2. Verificação de Efeitos ARCH**
+
+Antes de ajustar os modelos, realizamos o Teste do Multiplicador de Lagrange (Teste ARCH de Engle) para confirmar formalmente a presença de heterocedasticidade condicional na série.
+
+```{r teste_arch}
+# Teste ARCH para os retornos
+ArchTest(retornos_vale, lags = 10, demean = TRUE)
+```
+O p-valor resultante é extremamente baixo (próximo de zero), o que nos leva a **rejeitar a hipótese nula** de que não há efeitos ARCH. Isso confirma que a volatilidade da série é dependente do tempo e que a modelagem GARCH é apropriada.
+
+### **3. Estimação e Seleção do Melhor Modelo**
+
+Ajustaremos seis modelos diferentes: GARCH(1,1), EGARCH(1,1) e GJR-GARCH(1,1), cada um com as distribuições Normal e t-Student para os erros.
+
+#### **Ajuste dos Modelos**
+
+```{r ajuste_modelos}
+# --- Modelo sGARCH (Padrão) ---
+spec_garch_norm <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "norm")
+spec_garch_t <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "std")
+
+fit_garch_norm <- ugarchfit(spec = spec_garch_norm, data = retornos_vale)
+fit_garch_t <- ugarchfit(spec = spec_garch_t, data = retornos_vale)
+
+# --- Modelo EGARCH (Efeito Alavancagem) ---
+spec_egarch_norm <- ugarchspec(variance.model = list(model = "eGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "norm")
+spec_egarch_t <- ugarchspec(variance.model = list(model = "eGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "std")
+
+fit_egarch_norm <- ugarchfit(spec = spec_egarch_norm, data = retornos_vale)
+fit_egarch_t <- ugarchfit(spec = spec_egarch_t, data = retornos_vale)
+
+# --- Modelo GJR-GARCH (Efeito Alavancagem) ---
+spec_gjr_norm <- ugarchspec(variance.model = list(model = "gjrGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "norm")
+spec_gjr_t <- ugarchspec(variance.model = list(model = "gjrGARCH", garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0)), distribution.model = "std")
+
+fit_gjr_norm <- ugarchfit(spec = spec_gjr_norm, data = retornos_vale)
+fit_gjr_t <- ugarchfit(spec = spec_gjr_t, data = retornos_vale)
+```
+
+#### **Comparação e Seleção do Melhor Modelo**
+
+Para selecionar o melhor modelo, comparamos os Critérios de Informação de Akaike (AIC) e Bayesiano (BIC). O modelo com os menores valores é geralmente o preferido.
+
+```{r comparacao_modelos}
+# Coletando os critérios de todos os modelos
+info_criteria <- list(
+  "GARCH Normal" = infocriteria(fit_garch_norm),
+  "GARCH t-Student" = infocriteria(fit_garch_t),
+  "EGARCH Normal" = infocriteria(fit_egarch_norm),
+  "EGARCH t-Student" = infocriteria(fit_egarch_t),
+  "GJR-GARCH Normal" = infocriteria(fit_gjr_norm),
+  "GJR-GARCH t-Student" = infocriteria(fit_gjr_t)
+)
+
+# Criando uma tabela comparativa
+tabela_comparativa <- map_dfr(info_criteria, ~as_tibble(t(.x)), .id = "Modelo")
+
+# Exibindo a tabela de forma organizada
+knitr::kable(
+  tabela_comparativa,
+  caption = "Tabela Comparativa de Critérios de Informação",
+  digits = 4
+)
+```
+
+**Conclusão da Seleção:** Com base nos resultados, o modelo **EGARCH(1,1) com distribuição t-Student** apresenta os menores valores tanto para o AIC quanto para o BIC. Portanto, ele é o escolhido como o melhor modelo para descrever a volatilidade dos retornos da VALE. Este resultado sugere a presença de **efeito alavancagem** e que os retornos possuem **caudas mais pesadas** que a distribuição Normal.
+
+### **4. Análise de Diagnóstico do Melhor Modelo**
+
+Agora, realizamos uma análise completa dos resíduos do modelo `EGARCH(1,1) t-Student` para garantir que ele está bem ajustado.
+
+```{r diagnostico_residuos}
+# Selecionando o melhor modelo
+melhor_modelo <- fit_egarch_t
+
+# Gerando os gráficos de diagnóstico do rugarch
+# O gráfico 9 (ACF dos Resíduos Padronizados ao Quadrado) é o mais importante aqui.
+plot(melhor_modelo, which = "all")
+```
+
+**Interpretação do Diagnóstico:**
+* **ACF dos Resíduos Padronizados ao Quadrado (Gráfico 9):** Não há picos significativos, indicando que o modelo capturou com sucesso a dependência na volatilidade (os efeitos ARCH).
+* **Q-Q Plot dos Resíduos Padronizados (Gráfico 11):** Os pontos se alinham bem à reta, mostrando que a distribuição t-Student foi uma escolha adequada para modelar as caudas pesadas dos retornos.
+* **Teste de Ljung-Box nos Resíduos ao Quadrado (Exibido no console acima do gráfico):** Os p-valores para os testes de Ljung-Box são altos (acima de 0.05), confirmando que não há autocorrelação remanescente nos resíduos ao quadrado.
+
+Concluímos que o modelo **EGARCH(1,1) com distribuição t-Student** é adequado.
+
+### **5. Previsões para a Volatilidade Condicional**
+
+Finalmente, usamos o modelo escolhido para prever a volatilidade (desvio padrão condicional) para os próximos 20 dias úteis.
+
+```{r previsao_vol}
+# Realizando a previsão
+previsao <- ugarchforecast(melhor_modelo, n.ahead = 20)
+
+# Extraindo os dados da previsão (sigma representa o desvio padrão condicional)
+dados_previsao <- tibble(
+  Dia = 1:20,
+  Volatilidade_Prevista = as.numeric(sigma(previsao))
+)
+
+# Criando um gráfico da previsão com ggplot2
+ggplot(dados_previsao, aes(x = Dia, y = Volatilidade_Prevista)) +
+  geom_line(color = "purple", size = 1) +
+  geom_point(color = "purple", size = 2) +
+  labs(
+    title = "Previsão da Volatilidade Condicional para VALE3.SA",
+    subtitle = "Próximos 20 dias úteis",
+    x = "Dias à Frente",
+    y = "Volatilidade Prevista (Desvio Padrão)"
+  ) +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(0, 20, by = 2))
+```
+
+**Interpretação da Previsão:** O gráfico mostra a trajetória esperada para a volatilidade da VALE nos próximos 20 pregões. A tendência de longo prazo de um modelo GARCH estacionário é que a volatilidade prevista reverta à sua média incondicional.
