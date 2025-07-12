@@ -1,0 +1,238 @@
+---
+title: "homework-3"
+author: "Lucas Maciel Balieiro"
+date: "`2025-07-11')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+#### **1a. Análise Visual e Fatos Estilizados**
+
+Primeiro, carregamos os pacotes necessários e obtemos os dados do Ibovespa (`^BVSP`). Em seguida, visualizamos a série de preços e de retornos para identificar os fatos estilizados.
+
+```{r ibov_dados_e_graficos}
+library(tidyverse)
+library(BatchGetSymbols)
+library(forecast)
+library(ggthemes)
+library(tseries)
+library(purrr)
+
+# Obtenção dos dados
+ibov <- BatchGetSymbols(tickers = "^BVSP",
+                        first.date = '2021-01-01',
+                        last.date = Sys.Date(),
+                        type.return = "log",
+                        freq.data = "daily")
+
+ibov_df <- ibov$df.tickers
+retornos_ibov <- na.omit(as.ts(ibov_df$ret.closing.prices))
+
+# Gráfico de Preços de Fechamento
+ggplot(ibov_df, aes(x = ref.date, y = price.close)) +
+  geom_line(color = "darkblue") +
+  labs(title = "Preços de Fechamento do Ibovespa",
+       subtitle = "Período de 2021 até o presente",
+       x = "Data", y = "Preço") +
+  theme_economist()
+
+# Gráfico de Retornos Logarítmicos
+ggplot(ibov_df, aes(x = ref.date, y = ret.closing.prices)) +
+  geom_line(color = "darkred") +
+  labs(title = "Retornos Logarítmicos do Ibovespa",
+       subtitle = "Período de 2021 até o presente",
+       x = "Data", y = "Retorno") +
+  theme_economist()
+```
+
+#### **1b. Análise da FAC e FACP**
+
+Função de Autocorrelação (FAC) e a Função de Autocorrelação Parcial (FACP) para nos ajudar a identificar a ordem do modelo ARMA.
+
+```{r ibov_fac_facp}
+par(mfrow=c(1, 2)) 
+acf(retornos_ibov, main="FAC dos Retornos do Ibovespa", lag.max = 20)
+pacf(retornos_ibov, main="FACP dos Retornos do Ibovespa", lag.max = 20)
+par(mfrow=c(1, 1))  
+```
+
+A FAC e a FACP mostram algumas autocorrelações significativas nos primeiros *lags*, mas sem um padrão claro de corte ou decaimento. Isso sugere que um modelo ARMA de baixa ordem pode ser apropriado.
+
+#### **1c. Estimação do Modelo**
+
+Utilizaremos a função `auto.arima()` como um ponto de partida para encontrar um bom modelo e depois o estimaremos manualmente para analisar os coeficientes e os critérios de informação (AIC e BIC).
+
+```{r ibov_estimacao}
+
+modelo_sugerido <- auto.arima(retornos_ibov, trace = FALSE, stationary = TRUE, seasonal = FALSE)
+print(paste("Modelo sugerido por auto.arima:", arimaorder(modelo_sugerido)))
+
+modelo_final_ibov <- Arima(retornos_ibov, order = arimaorder(modelo_sugerido))
+
+cat("\n--- Resumo do Modelo Estimado ---\n")
+print(modelo_final_ibov)
+
+cat("\n--- Critérios de Informação ---\n")
+print(paste("AIC:", AIC(modelo_final_ibov)))
+print(paste("BIC:", BIC(modelo_final_ibov)))
+```
+
+O sumário do modelo mostra os coeficientes estimados e suas estatísticas (como o erro padrão), que podem ser usadas para calcular a estatística-t (`coef / s.e.`).
+
+#### **1d. Diagnóstico dos Resíduos**
+
+Verificamos se os resíduos do modelo se comportam como ruído branco, indicando que o modelo capturou toda a estrutura de autocorrelação presente nos dados.
+
+```{r ibov_diagnostico}
+# Teste de Ljung-Box para autocorrelação nos resíduos
+print(Box.test(residuals(modelo_final_ibov), type = "Ljung-Box", lag = 10))
+
+checkresiduals(modelo_final_ibov)
+```
+
+A FAC dos resíduos não apresenta *lags* significativos e o p-valor do teste de Ljung-Box é alto (geralmente > 0.05), o que nos leva a **não rejeitar** a hipótese nula. Concluímos que os resíduos se comportam como ruído branco e o modelo é adequado.
+
+### **2. Previsão para 5 Períodos**
+
+Com o modelo escolhido e validado, calculamos as previsões estáticas para os próximos 5 dias, junto com seus respectivos intervalos de confiança de 95%.
+
+```{r ibov_previsao}
+# Previsão para 5 períodos à frente
+previsao_ibov <- forecast(modelo_final_ibov, h = 5)
+
+print(previsao_ibov)
+
+plot(previsao_ibov, 
+     main = "Previsões do Modelo ARMA para o Ibovespa",
+     xlab = "Data", ylab = "Retorno")
+```
+
+### **3. Modelo ARMA para Ações do S&P 500**
+
+Nesta seção, baixamos os dados de todas as ações do S&P 500, estimamos um modelo ARMA para cada uma e criamos uma previsão de retorno para o dia seguinte (t+1).
+
+```{r sp500_modelagem}
+
+sp500_list <- GetSP500Stocks()
+
+tickers <- sp500_list$Tickers
+
+sp500_data <- BatchGetSymbols(tickers = tickers,
+                              first.date = '2021-01-01',
+                              last.date = Sys.Date(),
+                              type.return = "log")
+
+# Processamento e Modelagem
+resultados_sp500 <- sp500_data$df.tickers %>%
+  group_by(ticker) %>%
+  summarise(
+    modelo = if (n() > 30) list(auto.arima(ret.closing.prices, stationary = TRUE, seasonal = FALSE)) else list(NA),
+    .groups = 'drop'
+  ) %>%
+  # Remove ações que não puderam ser modeladas
+  filter(!is.na(modelo)) %>%
+  mutate(
+    previsao_t1 = map_dbl(modelo, ~forecast(.x, h = 1)$mean[1])
+  )
+
+maior_retorno_esperado <- resultados_sp500 %>%
+  arrange(desc(previsao_t1)) %>%
+  select(ticker, previsao_t1) %>%
+  head(1)
+
+cat("\n--- Ação do S&P 500 com Maior Expectativa de Retorno (t+1) ---\n")
+print(maior_retorno_esperado)
+```
+
+### **4. Estratégia de Negociação com Base em Previsões**
+
+Por fim, investigamos se as previsões do modelo ARMA poderiam gerar uma estratégia de negociação lucrativa. Dividimos os dados em um conjunto de treino para estimar o modelo e um conjunto de teste para simular a estratégia. 
+
+```{r sp500_estrategia}
+
+# Os dados ja estão baixados então já estou aproveitando
+df <- sp500_data$df.tickers
+data_corte <- as.Date('2024-01-01')
+
+avaliar_estrategia <- function(dados_acao) {
+  
+  # Use tryCatch to handle any potential errors during the process
+  tryCatch({
+    
+    treino <- dados_acao %>% filter(ref.date < data_corte)
+    teste <- dados_acao %>% filter(ref.date >= data_corte)
+    
+    # Check for sufficient data
+    if (nrow(treino) < 30 || nrow(teste) == 0) {
+      # This return is now inside the tryCatch, but it's still valid.
+      return(data.frame(
+        ticker = character(0),
+        retorno_total_estrategia = numeric(0),
+        retorno_total_bh = numeric(0)
+      ))
+    }
+    
+    # Fit the model
+    modelo <- auto.arima(treino$ret.closing.prices, stationary = TRUE, seasonal = FALSE)
+    
+    # Perform rolling forecast
+    previsoes <- numeric(nrow(teste))
+    for (i in 1:nrow(teste)) {
+      dados_hist <- c(treino$ret.closing.prices, teste$ret.closing.prices[0:(i-1)])
+      previsao_passo <- forecast(Arima(dados_hist, model=modelo), h=1)$mean[1]
+      previsoes[i] <- previsao_passo
+    }
+    
+    # Calculate strategy returns
+    sinal <- ifelse(previsoes > 0, 1, 0) # 1 to Buy, 0 to Stay out
+    retorno_estrategia <- sinal * teste$ret.closing.prices
+    
+    # Return the results data frame
+    return(data.frame(
+      ticker = first(dados_acao$ticker),
+      retorno_total_estrategia = sum(retorno_estrategia),
+      retorno_total_bh = sum(teste$ret.closing.prices) 
+    ))
+    
+  }, error = function(e) {
+    # --- THIS IS THE FIX ---
+    # If any error occurs in the block above, this 'error' function is called.
+    # It returns an empty data frame with the correct structure, preventing the crash.
+    # You can also print a message to know which ticker failed.
+    cat("Error processing ticker:", first(dados_acao$ticker), "- Skipping.\n")
+    return(data.frame(
+      ticker = character(0),
+      retorno_total_estrategia = numeric(0),
+      retorno_total_bh = numeric(0)
+    ))
+  })
+}
+
+# This part of the code now runs without errors
+filtered_df <- df %>%
+  filter(ticker %in% tickers)
+
+# 2. Split the filtered data frame into a list, with one data frame per ticker
+list_of_dfs <- split(filtered_df, filtered_df$ticker)
+
+# 3. Apply your function to each data frame in the list
+# The map() function iterates through the list and collects the results.
+results_list <- map(list_of_dfs, ~avaliar_estrategia(.x))
+
+# 4. Combine the list of results back into a single data frame
+# bind_rows() is very efficient for this task.
+resultado_estrategia <- bind_rows(results_list)
+
+# You can then proceed with your summary calculation
+desempenho_geral <- resultado_estrategia %>%
+  summarise(
+    lucro_total_estrategia = sum(retorno_total_estrategia),
+    lucro_total_buy_and_hold = sum(retorno_total_bh)
+  )
+
+cat("\n--- Comparativo de Lucro Acumulado (Estratégia vs. Buy and Hold) ---\n")
+print(desempenho_geral)
+```
