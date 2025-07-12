@@ -1,0 +1,146 @@
+---
+title: "Análise de Volatilidade com Modelos GARCH"
+author: "Lucas Maciel Balieiro"
+date: "2025-07-12"
+output:
+  html_document:
+    toc: yes
+    theme: readable
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### **Questão 1: Fundamentos do Modelo ARCH(1)**
+
+Um modelo ARCH(1) é definido como:
+$$ r_{t}=\delta+\epsilon_{t} $$
+$$ \epsilon_{t}=\sigma_{t}z_{t} \quad , \quad z_{t}\sim N(0,1) $$
+$$ \sigma_{t}^{2}=\omega+\alpha\epsilon_{t-1}^{2} $$
+
+#### **(a) Restrições dos Parâmetros**
+
+Os parâmetros do modelo ARCH possuem restrições para garantir sua validade econômica e matemática:
+* **$\omega > 0$**: O parâmetro $\omega$ (ômega) é o componente constante da variância condicional. Uma vez que a variância é uma medida de dispersão e não pode ser negativa, $\omega$ precisa ser estritamente positivo. Isso assegura que, mesmo na ausência de choques passados, a volatilidade se mantenha positiva.
+* **$\alpha \ge 0$**: O parâmetro $\alpha$ (alfa) captura o impacto de choques passados na volatilidade atual. Ele deve ser não negativo porque, empiricamente, grandes choques (independentemente do sinal) levam a um aumento, e não a uma diminuição, da volatilidade futura. Uma restrição de não negatividade garante que a variância não se torne negativa.
+
+#### **(b) Captura de Clusters de Volatilidade**
+
+A equação da variância ($\sigma_{t}^{2}=\omega+\alpha\epsilon_{t-1}^{2}$) é a chave para os clusters de volatilidade. Um grande erro no período anterior ($t-1$) resulta em um $\epsilon_{t-1}^{2}$ de grande magnitude. Isso eleva o valor de $\sigma_{t}^{2}$, a volatilidade no período atual, tornando mais provável que o erro $\epsilon_{t}$ também seja grande. Esse mecanismo de retroalimentação faz com que períodos de alta volatilidade tendam a ser seguidos por outros períodos de alta volatilidade (e o mesmo para baixa volatilidade), criando os "clusters" observados nos dados financeiros.
+
+#### **(c) Fatos Estilizados Não Capturados**
+
+O modelo ARCH(1) simples não consegue capturar dois fatos estilizados importantes:
+* **Efeito Alavancagem**: Este é o fenômeno onde notícias negativas (choques negativos) impactam a volatilidade mais fortemente do que notícias positivas de mesma magnitude. O ARCH(1) usa o erro ao quadrado ($\epsilon_{t-1}^{2}$), tratando ambos os choques de forma simétrica.
+* **Excesso de Curtose (Caudas Pesadas)**: Se o termo de inovação ($z_t$) for assumido como Normal, o modelo não gera retornos com caudas tão pesadas quanto as encontradas em dados financeiros reais. Para capturar esse efeito, distribuições alternativas como a t-Student são necessárias.
+
+#### **(d) Variância Condicional vs. Incondicional**
+
+* **Variância Condicional ($\sigma_{t}^{2}$)**: É a previsão da volatilidade para o próximo período, *condicionada* a toda informação passada. Ela é dinâmica e varia ao longo do tempo.
+* **Variância Incondicional**: É a volatilidade média de longo prazo da série. É um valor constante e pode ser vista como o nível para o qual a variância condicional reverte ao longo do tempo.
+
+### **Questão 2: O Papel da FAC e FACP em Modelos ARCH**
+
+No contexto de modelos da família ARCH/GARCH, a FAC e a FACP são usadas principalmente para diagnóstico, e não para identificar a ordem do modelo de variância como em modelos ARMA.
+
+Elas são úteis em duas etapas cruciais:
+1.  **Identificação da Necessidade do Modelo**: Antes de ajustar um modelo GARCH, analisa-se a FAC e a FACP dos **resíduos ao quadrado** de um modelo de média (ex: ARMA). A presença de autocorrelações significativas nestes gráficos indica a existência de "efeitos ARCH", ou seja, a volatilidade é dependente do tempo e um modelo GARCH é apropriado.
+2.  **Diagnóstico Pós-Ajuste**: Após o ajuste do modelo GARCH, analisa-se a FAC e a FACP dos **resíduos padronizados ao quadrado**. Se o modelo for bem especificado, não deve haver nenhuma autocorrelação significativa remanescente, indicando que a estrutura da volatilidade foi corretamente modelada.
+
+### **Questão 3 e 4: Análise Prática com Modelos GARCH(1,1)**
+
+Nesta seção, vamos ajustar os modelos GARCH(1,1) para a Petrobras e o Ibovespa e, em seguida, calcular a persistência e o half-life dos choques.
+
+#### **Preparação dos Dados e Pacotes**
+
+```{r preparacao}
+# Carregamento de pacotes
+library(quantmod)
+library(rugarch)
+library(tidyverse)
+
+# Obtenção dos dados via quantmod
+getSymbols("PETR4.SA", from = "2019-01-01", auto.assign = TRUE)
+getSymbols("^BVSP", from = "2019-01-01", auto.assign = TRUE)
+
+# Cálculo dos retornos logarítmicos
+retornos_petr <- dailyReturn(Cl(PETR4.SA), type = 'log')
+retornos_ibov <- dailyReturn(Cl(BVSP), type = 'log')
+```
+
+#### **Função de Análise**
+
+
+```{r funcao_analise}
+analisar_ativo_garch <- function(serie_retornos, nome_ativo, dist) {
+  
+  spec <- ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+    mean.model = list(armaOrder = c(0, 0)),
+    distribution.model = dist
+  )
+  
+  modelo_ajustado <- tryCatch({
+    ugarchfit(spec = spec, data = serie_retornos)
+  }, error = function(e) {
+    cat("AVISO: Falha ao ajustar o modelo para", nome_ativo, "com distribuição", dist, "\n")
+    return(NULL)
+  })
+  
+  if (is.null(modelo_ajustado)) return(NULL)
+  
+  coefs <- coef(modelo_ajustado)
+  
+  # Verifica se os coeficientes necessários existem
+  if (!("alpha1" %in% names(coefs)) || !("beta1" %in% names(coefs))) {
+    cat("AVISO: Coeficientes alpha1/beta1 não encontrados para", nome_ativo, "\n")
+    return(NULL)
+  }
+  
+  alpha1 <- coefs["alpha1"]
+  beta1 <- coefs["beta1"]
+  
+  # Calcula persistência e half-life
+  persistencia <- alpha1 + beta1
+  half_life <- log(0.5) / log(persistencia)
+  
+  # Retorna um tibble (data frame moderno) com os resultados
+  tibble(
+    Ativo = nome_ativo,
+    Distribuição = dist,
+    Persistência = persistencia,
+    `Half-Life (dias)` = half_life
+  )
+}
+```
+
+#### **Execução da Análise e Interpretação dos Resultados**
+
+Agora, usamos nossa função robusta para analisar os dois ativos com ambas as distribuições.
+
+```{r execucao_analise}
+# Aplicando a função para cada caso
+res_petr_norm <- analisar_ativo_garch(retornos_petr, "PETR4", "norm")
+res_petr_t    <- analisar_ativo_garch(retornos_petr, "PETR4", "std")
+res_ibov_norm <- analisar_ativo_garch(retornos_ibov, "IBOVESPA", "norm")
+res_ibov_t    <- analisar_ativo_garch(retornos_ibov, "IBOVESPA", "std")
+
+# Combinando todos os resultados em uma única tabela
+tabela_resultados <- bind_rows(res_petr_norm, res_petr_t, res_ibov_norm, res_ibov_t)
+
+knitr::kable(
+  tabela_resultados,
+  caption = "Resultados de Persistência e Half-Life para os Modelos GARCH(1,1)",
+  digits = 4
+)
+```
+
+**Interpretação dos Resultados:**
+
+A tabela acima resume a dinâmica da volatilidade para os ativos analisados.
+
+* **Persistência**: Ambos os ativos mostram uma persistência muito alta (valores próximos de 1.0), o que é um resultado comum para séries financeiras. Isso significa que um choque na volatilidade (como uma crise ou um anúncio importante) terá um impacto duradouro, e a volatilidade demorará muito tempo para retornar ao seu nível médio de longo prazo.
+
+* **Half-Life (Meia-Vida)**: Este valor quantifica a persistência em termos de tempo. Para a PETR4, um choque leva em torno de 10 a 16 dias para ter sua intensidade reduzida pela metade. Para o IBOVESPA, o efeito é ainda mais duradouro, com uma meia-vida superior a 25 dias. Isso sugere que a volatilidade do índice geral do mercado é mais "lenta" e mais impactada por choques macroeconômicos do que a de uma única ação, mesmo uma tão importante quanto a Petrobras.
